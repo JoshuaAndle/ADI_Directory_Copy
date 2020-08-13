@@ -55,7 +55,9 @@ import time
 from scipy.special import *
 from sklearn.neighbors import NearestNeighbors
 import sklearn
-
+from csv import reader
+import matplotlib.pyplot as plt
+import matplotlib
 #from random import randint, seed
 #np.random.seed(seed=0)
 
@@ -149,6 +151,7 @@ def Hash(XW,YV,eps_X,eps_Y,b_X,b_Y):
     return (CX, CY, CXY)
 
 
+### For all functions, desmos is a helpful graphing calculator website for visualizing them
 
 ### Phi parameter calculations
 def calc_distance(XW, YV, N):
@@ -162,6 +165,10 @@ def calc_distance(XW, YV, N):
         sigma += dist_array[n]
         n += 1
     distance = sigma/N
+    ### This maps a sigmoidal function with domain [-inf, inf] and range [0,2] (roughly a mirrored tanh function), passing through (0,1)
+    ### Since all distances are restricted to positive values, this outputs between 0 and 1, decreasing diminishingly with distance
+    ### Im not sure if it makes sense to do it this way, if it really needs to be bound to a fraction, or if values > 1 make sense
+    distance = (2/(1+np.exp(distance)))
     
     sigma = 0
     for i in range(1, len(dist_array)):
@@ -173,7 +180,7 @@ def calc_distance(XW, YV, N):
     return distance, convergence
 
     
-def calc_speed(XW, YV, N):
+def calc_dvac(XW, YV, N):
     T = XW.shape[0]
     t = T-N
     sigma = 0
@@ -182,27 +189,78 @@ def calc_speed(XW, YV, N):
     n = 0
     ### This is never called when i=0, due to our approach of using T_prime as a buffer window
     for i in range(t,T):
-        ### Distance between XW[i] and the previous point of XW[i-1]. Since time is 0.4 seconds per frame, 
-        ###     this represents a measure of velocity in units per second, could alternatively omit the 2.5
+        ### Distance between XW[i] and the previous point of XW[i-1]. In order to use velocity for subsequent calculations,  
+        ###     Im keeping the units in terms of distance/frame, rather than distance/second
         
-        vel_x[n] = ((XW[i][0]-XW[i-1][0])**2 + (XW[i][1]-XW[i-1][1])**2)**(1/2) * 2.5
-        vel_y[n] = ((YV[i][0]-YV[i-1][0])**2 + (YV[i][1]-YV[i-1][1])**2)**(1/2) * 2.5
+        vel_x[n] = ((XW[i][0]-XW[i-1][0])**2 + (XW[i][1]-XW[i-1][1])**2)**(1/2)
+        vel_y[n] = ((YV[i][0]-YV[i-1][0])**2 + (YV[i][1]-YV[i-1][1])**2)**(1/2)
         sigma +=  vel_x[n] + vel_y[n]
         n += 1
     velocity = sigma/N
 
+    ###! velocity is currently not normalized, this is because I dont think it makes sense to put bounds on its importance, or there is no
+    ###  intuitive way to determine an asymptote
+
+
     sigma = 0
     for i in range(1, len(vel_x)):
-            ### using acceleration = d.velocity/d.time, time is left out since its at 1 second intervals now
+            ### using acceleration = d.velocity/d.time, time is in units of frames rather than seconds
             acc_x = abs(vel_x[i] - vel_x[i-1])
             acc_y = abs(vel_y[i] - vel_y[i-1])
             sigma += acc_x + acc_y
     acceleration = sigma/(N-1) 
     
-    return velocity, acceleration
+    ### Attempt to normalize the acceleration term according to velocity and a tanh function to roughly capture the relative change in velocity
+    acceleration = (2/(1+np.exp(-acceleration/velocity)))-1
+    
+    
+    
+    sigma = 0
+    dist_array = np.zeros([5])
+    n = 0
+    ### Gets average distance between i and j over window N
+    for i in range(t,T):
+        dist_array[n] = ((XW[i][0]-YV[i][0])**2 + (XW[i][1]-YV[i][1])**2)**(1/2)
+        sigma += dist_array[n]
+        n += 1
+    distance = sigma/N
+    
+    ### This maps a sigmoidal function with domain [-inf, inf] and range [0,2] (roughly a mirrored tanh function), passing through (0,1)
+    ### Since all distances are restricted to positive values, this outputs between 0 and 1, decreasing diminishingly with distance
+    ### Im not sure if it makes sense to do it this way, if it really needs to be bound to a fraction, or if values > 1 make sense
+    distance = (2/(1+np.exp(distance)))
+    
+    
+    
+    sigma = 0
+    for i in range(1, len(dist_array)):
+            ### The change in distance between each frame in the window N
+            conv = dist_array[i] - dist_array[i-1]
+            sigma += conv
+    convergence = sigma/(N-1)
+
+    ### if the agents are moving directly toward eachother, the sum of their velocities would equal the rate at which they converge,
+    ###     In this case, convergence/velocities should normalize to 1 through an activation function.
+    ### If the agents are moving parallel to eachother, convergence is 0 and velocity doesn't matter in convergence/velocities. 
+    ###     In this case, 0/velocities should normalize to 0
+    ### If the agents are moving away from eachother, the term convergence/velocities would be negative
+    ###     In this case, -convergence/velocities could either be normalized to a negative value (and an activation function over phi accounts for it)
+    ###         or as with ReLU activation functions, negative values could be set to 0. I prefer the first option and will go with it for now
+    
+    ### Given the above constraints, since convergence/velocity is already bound between -1 and 1, using |x| activation function makes sense to me.
+    convergence = abs(convergence/velocity)
 
 
+    return velocity, acceleration, distance, convergence
 
+    
+    
+    
+
+
+def g_func(t):
+    #Where does this g function come from?
+    return((t-1)**2/(2*(t+1)))
 
 
 
@@ -220,9 +278,17 @@ def mi_t_edge(data, phi_type = '', U=10, gamma=[1, 1, 1], epsilon=[0,0,0], epsil
         ### This should go from 1 to T, but I'm leaving it as is for now. Would likely need to
         ###    include an exception for t==1 since z would have to be empty, which shouldnt work with
         ###    the rest of the code. I think it can be assumed that I for two single numbers is negligible though.
-        if(T > 200):
+        
+
+        
+        if(T > 20):
+            I_array = []
+            norm_array = []
+            ###! Double check that this lines up correctly. Was missing 1 index in the length when using range(0,20)
+            for x in range(0,21):
+                I_array.append(0)
             ### Uses T' of 20 frames as a buffer for analysis
-            for t in range(201, T):    
+            for t in range(21, T):    
                 x = data[0][:t , :].reshape(t, 2) 
                 y = data[1][:t , :].reshape(t, 2) 
                 
@@ -231,10 +297,28 @@ def mi_t_edge(data, phi_type = '', U=10, gamma=[1, 1, 1], epsilon=[0,0,0], epsil
                 print("     Time ", t)
                 print("     Value: ",I_value)
                 I_T +=I_value
+                I_array.append(I_value)
             
             end = time.time()
-            print("Running ", n_samples, " samples.")
+            print("Running ", T, " samples.")
             print("Value is: ", I_T)
+            
+            max_I = max(I_array)
+
+            for x in I_array:
+                norm_array.append(x/max_I)
+            
+            colors = matplotlib.colors.Colormap('test')
+            
+            plt.scatter(*zip(*data[0][:21]), s=5, c = norm_array[:21], cmap = 'jet', marker = 's')
+            plt.scatter(*zip(*data[1][:21]), s=5, c = norm_array[:21], cmap = 'jet')
+            plt.scatter(*zip(*data[0][21:-1]), c = norm_array[21:-1], cmap = 'jet', marker = 's')
+            plt.scatter(*zip(*data[1][21:-1]), c = norm_array[21:-1], cmap = 'jet')
+            plt.scatter(*zip(data[0][-1]), s=150, c = norm_array[-1:], cmap = 'jet', marker = 's')
+            plt.scatter(*zip(data[1][-1]), s=150, c = norm_array[-1:], cmap = 'jet')
+            plt.xlim(-6, 6)
+            plt.ylim(-12, 6)
+            plt.show()
         else:
             print("Insufficient time points for T prime")            
     else:
@@ -247,7 +331,7 @@ def mi_t_edge(data, phi_type = '', U=10, gamma=[1, 1, 1], epsilon=[0,0,0], epsil
 
 
 def EDGE(X,Y, phi_type = "", U=10, gamma=[1, 1], epsilon=[0,0], epsilon_vector = 'range', eps_range_factor=0.1, 
-         normalize_epsilon = True, ensemble_estimation = 'average', L_ensemble=10 ,hashing='p-stable', stochastic = False):
+         normalize_epsilon = False, ensemble_estimation = 'average', L_ensemble=10 ,hashing='p-stable', stochastic = False):
     
     gamma = np.array(gamma)
     gamma = gamma * 0.4
@@ -315,6 +399,7 @@ def EDGE(X,Y, phi_type = "", U=10, gamma=[1, 1], epsilon=[0,0], epsilon_vector =
         I = np.median(I_vec)
 
 ## Normalize epsilon according to MI estimation (cross validation)
+    ###! Error when I==0, which occurs with trajectory data with some frequency
     if normalize_epsilon == True:
         gamma=gamma * math.pow(2,-math.sqrt(I*2.0)+(0.5/I))
         normalize_epsilon = False
@@ -339,33 +424,64 @@ def Compute_MI(XW,YV, phi_type, U,eps_X,eps_Y,b_X,b_Y):
     I = 0
     J = 0
     N_c = 0
+    # print(CXY)
+
+            
+
+    #Determines the phi being used when determining I
+    ### If phi isnt being based on the keys in e, then this should only be done once rather than in a for loop
+    if phi_type == 'act' or phi_type == 'act_wt':
+        phi = np.linalg.norm(e[0])*np.linalg.norm(e[1])*np.linalg.norm(e[2])
+
+    elif phi_type == 'e_act' or phi_type == 'e_act_wt':
+        phi = np.exp(-(np.linalg.norm(e[0])*np.linalg.norm(e[1])*np.linalg.norm(e[2]))**2 / 2.)
+
+    elif phi_type == 'act_sq' or phi_type == 'act_wt_sq':
+        phi = (np.linalg.norm(e[0])**2)*(np.linalg.norm(e[1])**2)*(np.linalg.norm(e[2])**2)
+
+    ### Not finished, doesnt normalize in a fully sensible way
+    elif phi_type == 'dvac':
+        W = 5
+        ### vel: 0 to inf;  acc: 0 to 1; dis: 1 to 0; conv: -1 to 1
+        vel, acc, dis, conv = calc_dvac(XW, YV, W)
+        
+        #phi = max(0, dis*vel*acc*conv)
+        ### if vel is 0, phi is 0 because neither agent is moving.
+        ### if acc is 0, the vel term is unaffected
+        ### if dis is 0 then the term doesnt reduce phi, if dis is 1(agents are too far apart) phi is 0
+        ###! if conv is 0, the agents are completely parallel with constant and equal velocity, and phi is 0. This may or may not make sense
+            ### I think the conv and vel should maybe interact, because at higher velocity there is a greater risk of sudden changes in convergence
+        phi = (vel * (1+acc)) * dis * conv
+        ### just using a bounded tanh activation function until a more sophisticated one might be considered. 
+        ### Reasoning for this is that for negative phi(stemming from -conv) there is no appreciable risk of collion
+            ### This however is flawed logic. Even minute negative values would completely negate phi here, even at high velocity and close proximity.
+        phi = max(0, (2/(1+np.exp(-10*phi)))-1)
+        
+        
+    elif phi_type == 'dva':
+        W = 5
+        ### vel: 0 to inf;  acc: 0 to 1; dis: 1 to 0; conv: -1 to 1
+        vel, acc, dis, conv = calc_dvac(XW, YV, W)
+        
+        
+        phi = (vel * (1+acc)) * dis
+        phi = max(0, (2/(1+np.exp(-10*phi)))-1)
+        
+        
+        
+        
+        
+    else:
+        phi = 1.
+            
+            
     for e in CXY.keys():
         ### e is a 1x2x2 tensor, a pair of hashed coordinates
+        ###! For trajectory data, if the targets don't move during the trajectory Ni == Nj == N, I == 0
         Ni = len(CX[e[0]])
         Nj = len(CY[e[1]])
         Nij = len(CXY[e])
 
-
-        #Determines the phi being used when determining I
-        ### If phi isnt being based on the keys in e, then this should only be done once rather than in a for loop
-        if phi_type == 'act' or phi_type == 'act_wt':
-            phi = np.linalg.norm(e[0])*np.linalg.norm(e[1])*np.linalg.norm(e[2])
-
-        elif phi_type == 'e_act' or phi_type == 'e_act_wt':
-            phi = np.exp(-(np.linalg.norm(e[0])*np.linalg.norm(e[1])*np.linalg.norm(e[2]))**2 / 2.)
-
-        elif phi_type == 'act_sq' or phi_type == 'act_wt_sq':
-            phi = (np.linalg.norm(e[0])**2)*(np.linalg.norm(e[1])**2)*(np.linalg.norm(e[2])**2)
-
-        ### Not finished, doesnt normalize in a fully sensible way
-        elif phi_type == 'dvac':
-            W = 5
-            dis, conv = calc_distance(XW, YV, W)
-            vel, acc = calc_speed(XW, YV, W)
-            phi = max(0, dis*vel*acc*conv)
-        else:
-            phi = 1.
-            
         ### Taken from XYZ ADI Version, g_func is ((t-1)**2/(2*(t+1))) in that code for some reason
         ### num   = phi * (Nik*Njk) * g_func(Nijk*Nk/(Nik*Njk)) 
         ### denom = Ni
@@ -375,21 +491,100 @@ def Compute_MI(XW,YV, phi_type, U,eps_X,eps_Y,b_X,b_Y):
         ### g() is this bounded log function
         ### But why is wi wj replaced with Nij here?
         ### Multiplying by Nij and then dividing by the sum of Nij is done in order to get a weighted average, where sum(Nij) = N
-        I += Nij* max(min(math.log(1.0*Nij*N/(Ni*Nj),2), U),0.001)
-        N_c+=Nij
+        
+        
+        #I += Nij* max(min(math.log(1.0*Nij*N/(Ni*Nj),2), U),0.001)
+        #N_c+=Nij
+        
+        
+        
+        #I +=  Nij* g_func(Nij*N/(Ni*Nj))
+        I += phi * (Ni/N)*(Nj/N)* g_func(Nij*N/(Ni*Nj))
 
-    I = 1.0* I / N_c
-    
+        # print(g_func(Nij*N/(Ni*Nj)))
+        #N_c+=Nij
+    #I = 1.0* I / N_c
+    I = 1.0* I
     return I
 
-
-
-
-
 ####################################
 ####################################
+"""
+The better way to run this is to eventually use bash scripts to pass in the dataset and have this return the ADI, but for now
+extracting the data from the dataset within the EDGE script is fine as a temporary solution
+"""
 if __name__ == "__main__":
 
+    
+    
+    ped_count = 0
+
+    sceneName = "ETHhotel/annotation/"
+    
+    fileI = open((sceneName + 'pos_data_interp.csv'), 'r')
+    fileO = open((sceneName + 'ADI_outputs.csv'), 'w')
+
+    csv_list = reader(fileI)
+    raw_data = list(csv_list)
+    
+    #ped_i = 6
+    #ped_i = 11
+    #ped_i = 15
+    #ped_i = 16
+    #ped_i = 13
+    #ped_i = 20
+    #ped_i = 24
+    #ped_i = 36
+    ped_i = 68
+    
+    ### j==8 causes errors since 8 is stationary, j == 12 represents a grouped pair walking parallel, j==14 represents a distant antiparallel pair
+    #ped_j = 8
+    #ped_j = 12
+    #ped_j = 14
+    #ped_j = 21 
+    #ped_j = 25 
+    #ped_j = 37
+    ped_j = 69
+    
+    traj_data_i = []
+    traj_data_j = []
+    traj_shared_i = []
+    traj_shared_j = []
+    for i in range(0, len(raw_data)):
+        if int(raw_data[i][1]) > ped_count:
+            ped_count = int(raw_data[i][1])
+       
+    
+    
+    for i in range(0, len(raw_data)):
+        if int(raw_data[i][1]) == ped_i:        
+            ### If the line matches the regular expression pattern, extract coordinate and frame information
+            traj_data_i.append([int(raw_data[i][0]), float(raw_data[i][2]), float(raw_data[i][3])])
+    
+        elif int(raw_data[i][1]) == ped_j:        
+            ### If the line matches the regular expression pattern, extract coordinate and frame information
+            traj_data_j.append([int(raw_data[i][0]), float(raw_data[i][2]), float(raw_data[i][3])])
+    
+    for i in range(0, len(traj_data_i)):
+        frame = traj_data_i[i][0]
+        for n in range(0, len(traj_data_j)):
+            if traj_data_j[n][0] == frame:
+                traj_shared_i.append([traj_data_i[i][1], traj_data_i[i][2]])
+                traj_shared_j.append([traj_data_j[n][1], traj_data_j[n][2]])
+    traj_data = [traj_shared_i, traj_shared_j]
+    
+
+    mi_t_edge(np.asarray(traj_data), phi_type = 'dva', hashing = 'floor')
+
+        # else:
+        #     mi_t_edge(np.asarray(traj_data), phi_type = 'dvac', hashing = 'floor')
+        #     traj_data = []
+        #     ped = int(raw_data[i][1])
+        #     traj_data.append([float(raw_data[i][2]), float(raw_data[i][3])])
+    
+
+    fileI.close()
+    fileO.close()
 
     ### Makes 2 Nx2 datasets as placeholders for 500 frame trajectories    
     n_samples = 500
@@ -401,7 +596,7 @@ if __name__ == "__main__":
 
     
     #I = EDGE(X,Y, phi_type = "dvac", hashing="floor")
-    mi_t_edge(data, phi_type = 'dvac', hashing = 'floor')
+    #mi_t_edge(data, phi_type = 'dvac', hashing = 'floor')
 
     #print ('Estimated MI',I)
     print('################################')
